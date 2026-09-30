@@ -326,12 +326,39 @@ class LinuxDoBot:
             self.page.get(f"{self.config['base_url']}/login")
             self._random_delay(2, 4, "页面加载")
 
-            # 2. 点击「使用 GitHub 登录」按钮（多重定位兜底）
-            gh_btn = (
-                self.page.ele("css:.btn-social.github", timeout=8)
-                or self.page.ele("css:.btn.github", timeout=3)
-                or self.page.ele("@href*=github", timeout=5)
-            )
+            # 2. 点击「使用 GitHub 登录」按钮（多重定位兜底 + CF 挑战回跳等待）
+            gh_btn = None
+            for attempt in range(20):  # 最多等约 60 秒
+                gh_btn = (
+                    self.page.ele("css:.btn-social.github", timeout=3)
+                    or self.page.ele("css:.btn.github", timeout=3)
+                    or self.page.ele("@href*=github", timeout=2)
+                )
+                if gh_btn:
+                    break
+                # CF 挑战页特征检测
+                try:
+                    body_text = (self.page.ele("tag:body").text or "")[:200]
+                except Exception:
+                    body_text = ""
+                cf_pending = any(
+                    k in body_text
+                    for k in ("Just a moment", "Verifying", "Verification successful", "Checking your browser")
+                ) or "chl_" in self.page.url
+                if "Verification successful" in body_text or "Waiting for" in body_text:
+                    # Turnstile 验证已通过但回跳卡住 → 刷新重载（cookie 已种，刷新通常直接过）
+                    self.log.debug(f"CF 验证已过但回跳卡住({attempt + 1}/20)，刷新页面...")
+                    try:
+                        self.page.refresh()
+                    except Exception:
+                        pass
+                    time.sleep(3)
+                    continue
+                if cf_pending:
+                    self.log.debug(f"Cloudflare 挑战中({attempt + 1}/20)，继续等待...")
+                else:
+                    self.log.debug(f"登录页元素未就绪({attempt + 1}/20)，继续等待...")
+                time.sleep(3)
             if not gh_btn:
                 self.log.error("未找到 GitHub 登录按钮")
                 self.log.error(f"当前 URL: {self.page.url}")
