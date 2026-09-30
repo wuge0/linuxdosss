@@ -258,6 +258,14 @@ class LinuxDoBot:
             username_input = self.page.ele("#login-account-name", timeout=10)
             if not username_input:
                 self.log.error("未找到用户名输入框")
+                self.log.error(f"当前 URL: {self.page.url}")
+                try:
+                    page_title = self.page.title
+                    self.log.error(f"页面标题: {page_title}")
+                    page_text = (self.page.ele('tag:body').text or '')[:1500]
+                    self.log.error(f"页面正文前 1500 字符:\n{page_text}")
+                except Exception as diag_err:
+                    self.log.error(f"诊断信息获取失败: {diag_err}")
                 return False
             username_input.clear()
             username_input.input(self.username)
