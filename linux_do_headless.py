@@ -161,7 +161,7 @@ class Logger:
 class LinuxDoBot:
     """Linux.do 自动浏览机器人（无头版）"""
 
-    def __init__(self, username, password, config=None, logger=None):
+    def __init__(self, username, password, config=None, logger=None, github_username=None, github_password=None):
         """
         初始化机器人
 
@@ -170,9 +170,13 @@ class LinuxDoBot:
             password: Linux.do 密码
             config: 配置字典，可选
             logger: 日志工具，可选
+            github_username: GitHub 用户名（GitHub OAuth 登录用，可选）
+            github_password: GitHub 密码（GitHub OAuth 登录用，可选）
         """
         self.username = username
         self.password = password
+        self.github_username = github_username
+        self.github_password = github_password
         self.config = {**DEFAULT_CONFIG, **(config or {})}
         self.log = logger or Logger()
         self.page = None
@@ -245,6 +249,10 @@ class LinuxDoBot:
         Returns:
             bool: 是否成功
         """
+        # GitHub OAuth 登录模式
+        if self.config.get("auth_method") == "github":
+            return self._login_github()
+
         self.log.info("开始登录...")
 
         try:
@@ -302,6 +310,83 @@ class LinuxDoBot:
 
         except Exception as e:
             self.log.error(f"登录过程出错: {e}")
+            return False
+
+    def _login_github(self):
+        """通过 GitHub OAuth 登录 Linux.do"""
+        gh_user = self.github_username or os.environ.get("GITHUB_USERNAME")
+        gh_pass = self.github_password or os.environ.get("GITHUB_PASSWORD")
+        if not gh_user or not gh_pass:
+            self.log.error("GitHub 登录需要 GITHUB_USERNAME / GITHUB_PASSWORD")
+            return False
+
+        self.log.info("使用 GitHub OAuth 登录...")
+        try:
+            # 1. 打开 Linux.do 登录页
+            self.page.get(f"{self.config['base_url']}/login")
+            self._random_delay(2, 4, "页面加载")
+
+            # 2. 点击「使用 GitHub 登录」按钮（多重定位兜底）
+            gh_btn = (
+                self.page.ele("css:.btn-social.github", timeout=8)
+                or self.page.ele("css:.btn.github", timeout=3)
+                or self.page.ele("@href*=github", timeout=5)
+            )
+            if not gh_btn:
+                self.log.error("未找到 GitHub 登录按钮")
+                self.log.error(f"当前 URL: {self.page.url}")
+                try:
+                    page_text = (self.page.ele("tag:body").text or "")[:1000]
+                    self.log.error(f"页面正文:\n{page_text}")
+                except Exception:
+                    pass
+                return False
+            gh_btn.click()
+            self._random_delay(2, 4, "跳转 GitHub")
+
+            # 3. GitHub 登录页（已登录过则跳过）
+            login_field = self.page.ele("#login_field", timeout=8)
+            if login_field:
+                self.log.debug("输入 GitHub 用户名...")
+                login_field.input(gh_user)
+                self._random_delay(0.5, 1.2, "输入用户名后")
+                pwd_field = self.page.ele("#password", timeout=5)
+                if not pwd_field:
+                    self.log.error("未找到 GitHub 密码输入框")
+                    return False
+                pwd_field.input(gh_pass)
+                self._random_delay(0.5, 1.2, "输入密码后")
+                commit_btn = self.page.ele("css:input[name='commit']", timeout=5)
+                if not commit_btn:
+                    self.log.error("未找到 GitHub 登录按钮")
+                    return False
+                commit_btn.click()
+                self._random_delay(3, 5, "GitHub 登录")
+
+                # 3.1 两步验证检测
+                if "two-factor" in self.page.url:
+                    self.log.error("GitHub 开启了两步验证(2FA)，自动化无法继续；建议在浏览器配置中持久化 GitHub 登录态，或改用账密登录")
+                    return False
+
+            # 4. GitHub OAuth 授权确认页（首次授权出现；已授权过会直接回跳）
+            auth_btn = (
+                self.page.ele("css:button[name='authorize']", timeout=8)
+                or self.page.ele("#js-oauth-authorize-btn", timeout=3)
+            )
+            if auth_btn:
+                self.log.debug("点击 GitHub 授权按钮...")
+                auth_btn.click()
+                self._random_delay(3, 6, "OAuth 授权回跳")
+
+            # 5. 验证 Linux.do 登录状态
+            if self._check_login():
+                self.log.success("GitHub OAuth 登录成功")
+                return True
+            self.log.error(f"GitHub OAuth 登录失败，当前 URL: {self.page.url}")
+            return False
+
+        except Exception as e:
+            self.log.error(f"GitHub OAuth 登录过程出错: {e}")
             return False
 
     def _check_login(self):
@@ -564,6 +649,20 @@ def parse_args():
     parser.add_argument(
         "-p", "--password", help="Linux.do 密码（或设置环境变量 LINUXDO_PASSWORD）"
     )
+    parser.add_argument(
+        "--auth-method",
+        choices=["password", "github"],
+        default=None,
+        help="登录方式: password=账密表单, github=GitHub OAuth（默认读环境变量 LINUXDO_AUTH_METHOD，未设置则 password）",
+    )
+    parser.add_argument(
+        "--github-username",
+        help="GitHub 用户名（GitHub OAuth 登录用，或环境变量 GITHUB_USERNAME）",
+    )
+    parser.add_argument(
+        "--github-password",
+        help="GitHub 密码（GitHub OAuth 登录用，或环境变量 GITHUB_PASSWORD）",
+    )
     parser.add_argument("--proxy", help="代理地址，如 127.0.0.1:7897")
     parser.add_argument("--topics", type=int, default=30, help="浏览帖子数量，默认 30")
     parser.add_argument(
@@ -586,18 +685,41 @@ def main():
     password = args.password or os.environ.get("LINUXDO_PASSWORD")
     proxy = args.proxy or os.environ.get("LINUXDO_PROXY")
 
+    # 登录方式（优先命令行，其次环境变量，默认账密）
+    auth_method = (
+        args.auth_method
+        or os.environ.get("LINUXDO_AUTH_METHOD", "password").strip().lower()
+    )
+    github_username = args.github_username or os.environ.get("GITHUB_USERNAME")
+    github_password = args.github_password or os.environ.get("GITHUB_PASSWORD")
+
     # 验证必要参数
-    if not username or not password:
-        print("错误: 请提供用户名和密码")
-        print()
-        print("方式一: 命令行参数")
-        print("  python linux_do_headless.py -u 用户名 -p 密码")
-        print()
-        print("方式二: 环境变量")
-        print("  export LINUXDO_USERNAME='用户名'")
-        print("  export LINUXDO_PASSWORD='密码'")
-        print("  python linux_do_headless.py")
-        sys.exit(1)
+    if auth_method == "github":
+        if not github_username or not github_password:
+            print("错误: GitHub OAuth 登录需要 GitHub 凭据")
+            print()
+            print("方式一: 命令行参数")
+            print("  python linux_do_headless.py --auth-method github --github-username 用户名 --github-password 密码")
+            print()
+            print("方式二: 环境变量")
+            print("  export LINUXDO_AUTH_METHOD=github")
+            print("  export GITHUB_USERNAME='GitHub用户名'")
+            print("  export GITHUB_PASSWORD='GitHub密码'")
+            sys.exit(1)
+        if not username:
+            username = github_username  # Linux.do 侧占位（OAuth 不需要账密）
+    else:
+        if not username or not password:
+            print("错误: 请提供用户名和密码")
+            print()
+            print("方式一: 命令行参数")
+            print("  python linux_do_headless.py -u 用户名 -p 密码")
+            print()
+            print("方式二: 环境变量")
+            print("  export LINUXDO_USERNAME='用户名'")
+            print("  export LINUXDO_PASSWORD='密码'")
+            print("  python linux_do_headless.py")
+            sys.exit(1)
 
     # 创建日志工具
     logger = Logger(debug=args.debug)
@@ -605,10 +727,18 @@ def main():
     # 配置
     config = {
         "like_rate": args.like_rate / 100,  # 转换为小数
+        "auth_method": auth_method,
     }
 
     # 创建机器人并运行
-    bot = LinuxDoBot(username=username, password=password, config=config, logger=logger)
+    bot = LinuxDoBot(
+        username=username,
+        password=password,
+        config=config,
+        logger=logger,
+        github_username=github_username,
+        github_password=github_password,
+    )
 
     stats = bot.run(
         target_topics=args.topics, headless=not args.no_headless, proxy=proxy
