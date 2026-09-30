@@ -313,14 +313,16 @@ class LinuxDoBot:
             return False
 
     def _login_github(self):
-        """通过 GitHub OAuth 登录 Linux.do"""
+        """通过 GitHub OAuth 登录 Linux.do（浏览器已有登录态时无需密码）"""
         gh_user = self.github_username or os.environ.get("GITHUB_USERNAME")
         gh_pass = self.github_password or os.environ.get("GITHUB_PASSWORD")
-        if not gh_user or not gh_pass:
-            self.log.error("GitHub 登录需要 GITHUB_USERNAME / GITHUB_PASSWORD")
+        if not gh_user:
+            self.log.error("GitHub 登录需要 GITHUB_USERNAME")
             return False
-
-        self.log.info("使用 GitHub OAuth 登录...")
+        if gh_pass:
+            self.log.info("使用 GitHub OAuth 登录（已提供密码）...")
+        else:
+            self.log.info("使用 GitHub OAuth 登录（未提供密码，依赖浏览器已有登录态）...")
         try:
             # 1. 打开 Linux.do 登录页
             self.page.get(f"{self.config['base_url']}/login")
@@ -374,6 +376,9 @@ class LinuxDoBot:
             # 3. GitHub 登录页（已登录过则跳过）
             login_field = self.page.ele("#login_field", timeout=8)
             if login_field:
+                if not gh_pass:
+                    self.log.error("GitHub 无登录态且未提供密码（GITHUB_PASSWORD），无法自动登录")
+                    return False
                 self.log.debug("输入 GitHub 用户名...")
                 login_field.input(gh_user)
                 self._random_delay(0.5, 1.2, "输入用户名后")
@@ -722,16 +727,11 @@ def main():
 
     # 验证必要参数
     if auth_method == "github":
-        if not github_username or not github_password:
-            print("错误: GitHub OAuth 登录需要 GitHub 凭据")
+        if not github_username:
+            print("错误: GitHub OAuth 登录需要 GitHub 用户名")
             print()
-            print("方式一: 命令行参数")
-            print("  python linux_do_headless.py --auth-method github --github-username 用户名 --github-password 密码")
-            print()
-            print("方式二: 环境变量")
-            print("  export LINUXDO_AUTH_METHOD=github")
-            print("  export GITHUB_USERNAME='GitHub用户名'")
-            print("  export GITHUB_PASSWORD='GitHub密码'")
+            print("命令行: --github-username 用户名，或环境变量 GITHUB_USERNAME")
+            print("提示: 密码可选——沙箱/本机浏览器已有 GitHub 登录态时可省略")
             sys.exit(1)
         if not username:
             username = github_username  # Linux.do 侧占位（OAuth 不需要账密）
