@@ -45,10 +45,9 @@
 name: Run Schedule
 
 on:
-  # 定时触发已禁用（避免错误通知）
-  # schedule:
-  #   - cron: '0 0 * * *'   # UTC 0:00 = 北京时间 8:00
-  #   - cron: '0 12 * * *'  # UTC 12:00 = 北京时间 20:00
+  # 定时触发：每天 UTC 0:00 = 北京时间 8:00
+  schedule:
+    - cron: '0 0 * * *'
 
   # 手动触发
   workflow_dispatch:
