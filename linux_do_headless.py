@@ -211,6 +211,10 @@ class LinuxDoBot:
         try:
             options = ChromiumOptions()
 
+            # 固定 profile 路径（持久化登录态，便于备份/恢复）
+            options.set_user_data_path("/workspace/chrome-profile")
+            options.set_local_port(9222)
+
             # 无头模式
             if headless:
                 options.set_argument("--headless=new")
