@@ -32,6 +32,26 @@ docker-compose logs -f
 | `TOPICS_MAX` | ❌ | 40 | 每次最多浏览帖子数 |
 | `LIKE_RATE` | ❌ | 30 | 点赞概率 (0-100) |
 | `RUN_ON_START` | ❌ | true | 启动时是否立即运行一次 |
+| `WXPUSHER_APP_TOKEN` | ❌ | - | WxPusher 应用 Token（微信推送） |
+| `WXPUSHER_UIDS` | ❌ | - | WxPusher 接收者 UID，多个逗号分隔 |
+| `WXPUSHER_TOPIC_IDS` | ❌ | - | WxPusher 主题 ID（群发，可选） |
+
+### WxPusher 微信推送（可选）
+
+每次浏览任务结束后，可把运行结果（状态/浏览数/点赞数/用时）推送到微信。
+
+1. 打开 https://wxpusher.zjiecode.com/ ，微信扫码登录
+2. 「应用管理」→ 新建应用，复制 **APP_TOKEN**（`AT_` 开头）
+3. 微信扫码关注应用二维码，或在「用户管理」复制 **UID**（`UID_` 开头）
+4. 填入 `.env`：
+
+```bash
+WXPUSHER_APP_TOKEN=AT_xxxxxxxxxxxxxxxx
+WXPUSHER_UIDS=UID_xxxxxxxxxxxxxxxx
+```
+
+不配置则不发送通知，脚本照常运行。也可在命令后加 `--no-notify` 显式关闭。
+
 
 ### 运行机制
 

@@ -19,6 +19,8 @@
 # 3. 添加 Secrets（Settings -> Secrets and variables -> Actions -> New repository secret）
 #    - LINUXDO_USERNAME: 你的 Linux.do 用户名
 #    - LINUXDO_PASSWORD: 你的 Linux.do 密码
+#    - WXPUSHER_APP_TOKEN: （可选）WxPusher 应用 Token，用于微信推送运行结果
+#    - WXPUSHER_UIDS:      （可选）接收者 UID，多个用逗号分隔
 #
 # 4. 启用 Actions
 #    Actions -> I understand my workflows, go ahead and enable them
@@ -96,6 +98,9 @@ jobs:
         env:
           LINUXDO_USERNAME: ${{ secrets.LINUXDO_USERNAME }}
           LINUXDO_PASSWORD: ${{ secrets.LINUXDO_PASSWORD }}
+          # WxPusher 通知（可选，未配置则自动跳过）
+          WXPUSHER_APP_TOKEN: ${{ secrets.WXPUSHER_APP_TOKEN }}
+          WXPUSHER_UIDS: ${{ secrets.WXPUSHER_UIDS }}
         run: |
           # 获取参数（手动触发时使用输入值，定时触发时使用默认值）
           TOPICS="${{ github.event.inputs.topics || '30' }}"

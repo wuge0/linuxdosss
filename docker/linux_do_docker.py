@@ -20,6 +20,14 @@ except ImportError:
     print("错误: pip install DrissionPage")
     sys.exit(1)
 
+# WxPusher 通知（可选，零依赖）。docker/ 与仓库根目录同级，需把根目录加入搜索路径
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:
+    from wxpusher import WxPusherNotifier, build_report
+except ImportError:
+    WxPusherNotifier = None
+    build_report = None
+
 
 # ============================================================================
 # 配置
@@ -81,12 +89,14 @@ class Log:
 
 
 class LinuxDoBot:
-    def __init__(self, username, password, like_rate=0.3):
+    def __init__(self, username, password, like_rate=0.3, notifier=None):
         self.username = username
         self.password = password
         self.like_rate = like_rate
         self.page = None
         self.stats = {"topics": 0, "likes": 0, "scrolls": 0}
+        self.notifier = notifier
+        self.login_ok = False
 
     def _delay(self, lo=1.0, hi=3.0, reason=""):
         t = random.uniform(lo, hi)
@@ -274,6 +284,8 @@ class LinuxDoBot:
             if not self.login():
                 return
 
+            self.login_ok = True
+
             cats = CATEGORIES.copy()
             random.shuffle(cats)
 
@@ -313,6 +325,33 @@ class LinuxDoBot:
             f"浏览 {self.stats['topics']} | 点赞 {self.stats['likes']} | 滚动 {self.stats['scrolls']}"
         )
         Log.info("=" * 50)
+
+        self._notify(elapsed)
+
+    def _notify(self, elapsed=None):
+        """发送 WxPusher 通知（未配置则跳过；失败不影响主流程）"""
+        if not self.notifier or WxPusherNotifier is None or build_report is None:
+            return
+        try:
+            ok = self.stats["topics"] > 0
+            content = build_report(
+                topics=self.stats["topics"],
+                likes=self.stats["likes"],
+                floors=self.stats["scrolls"],
+                elapsed=elapsed,
+                login_ok=self.login_ok,
+                ok=ok,
+                title="Linux.do 自动浏览（Docker）",
+                extra=f"- **时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            )
+            summary = (
+                f"浏览 {self.stats['topics']} 篇 / 点赞 {self.stats['likes']} 次"
+                if self.login_ok
+                else "登录失败，请检查"
+            )
+            self.notifier.send(content, summary=summary, content_type=3)
+        except Exception as e:  # noqa: BLE001
+            Log.debug(f"发送通知失败: {e}")
 
 
 # ============================================================================
@@ -445,6 +484,9 @@ def main():
     )
     parser.add_argument("--once", action="store_true", help="只运行一次，不启动调度器")
     parser.add_argument("--debug", action="store_true", help="调试模式")
+    parser.add_argument(
+        "--no-notify", action="store_true", help="禁用 WxPusher 通知"
+    )
     args = parser.parse_args()
 
     if args.debug:
@@ -464,10 +506,21 @@ def main():
     topics_min = int(args.topics_min or os.environ.get("TOPICS_MIN", "15"))
     topics_max = int(args.topics_max or os.environ.get("TOPICS_MAX", "40"))
 
+    # WxPusher 通知器（未配置则 enabled=False，静默跳过）
+    notifier = None
+    if not args.no_notify and WxPusherNotifier is not None:
+        notifier = WxPusherNotifier(logger=Log)
+        Log.info(f"WxPusher 通知: {notifier.describe()}")
+        if not notifier.enabled:
+            Log.warn(
+                "WxPusher 未配置（需 WXPUSHER_APP_TOKEN + WXPUSHER_UIDS），本次不发送通知"
+            )
+
     bot = LinuxDoBot(
         username=username,
         password=password,
         like_rate=like_rate / 100,
+        notifier=notifier,
     )
 
     if args.once:

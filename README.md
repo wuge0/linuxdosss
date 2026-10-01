@@ -397,6 +397,40 @@ export LINUXDO_PASSWORD="密码"
 python linux_do_headless.py
 ```
 
+### WxPusher 微信推送通知（可选）
+
+任务结束后把运行结果（状态 / 浏览帖子数 / 点赞数 / 用时）推送到微信，适合无人值守时掌握运行情况。
+
+**1. 开通 WxPusher**
+
+1. 打开 [https://wxpusher.zjiecode.com/](https://wxpusher.zjiecode.com/) ，微信扫码登录
+2. 「应用管理」→ 新建应用，复制 **APP_TOKEN**（`AT_` 开头）
+3. 微信关注应用二维码，或在「用户管理」复制 **UID**（`UID_` 开头）
+
+**2. 配置（三选一）**
+
+```bash
+# 方式一：环境变量（推荐，Actions 用 Secrets）
+export WXPUSHER_APP_TOKEN="AT_xxxxxxxx"
+export WXPUSHER_UIDS="UID_xxxxxxxxxxxxxxxx"   # 多个用逗号分隔
+
+# 方式二：命令行参数
+python linux_do_headless.py -u 用户名 -p 密码 \
+  --wxpusher-app-token AT_xxxxxxxx \
+  --wxpusher-uid UID_xxxxxxxxxxxxxxxx
+
+# 方式三：群发到主题（可选）
+python linux_do_headless.py ... --wxpusher-topic-id TOPIC_ID
+```
+
+**3. 关闭通知**
+
+未配置时自动跳过；如需强制关闭，加 `--no-notify`。
+
+> 通知失败（网络异常 / token 错误）不会中断浏览任务，仅记录一条警告。
+
+GitHub Actions 使用时，在仓库 Secrets 里添加 `WXPUSHER_APP_TOKEN` 和 `WXPUSHER_UIDS` 即可。
+
 ## macOS / Linux 版本
 
 由于 PyInstaller 不支持跨平台打包（Windows 上无法打包 macOS/Linux 版本），我创建了：

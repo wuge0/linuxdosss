@@ -86,6 +86,13 @@ except ImportError:
     print("运行: pip install DrissionPage")
     sys.exit(1)
 
+# WxPusher 通知（可选，零依赖）
+try:
+    from wxpusher import WxPusherNotifier, build_report
+except ImportError:
+    WxPusherNotifier = None
+    build_report = None
+
 
 # ============================================================================
 # 配置
@@ -185,6 +192,10 @@ class LinuxDoBot:
             "likes": 0,  # 点赞数
             "floors": 0,  # 爬楼数
         }
+        # 是否成功登录（用于通知报告）
+        self.login_ok = False
+        # WxPusher 通知器（由外部注入；未配置则为 None）
+        self.notifier = self.config.get("notifier")
 
     def _random_delay(self, min_sec=None, max_sec=None, reason=""):
         """随机延迟（防风控）"""
@@ -328,13 +339,20 @@ class LinuxDoBot:
         else:
             self.log.info("使用 GitHub OAuth 登录（未提供密码，依赖浏览器已有登录态）...")
         try:
+            # 0. 先判断浏览器是否已有有效登录态（chrome-profile 持久化会话）
+            #    若已登录则直接跳过 /login，避免无谓触发 Cloudflare 挑战
+            if self._check_login():
+                self.log.success("检测到已有登录态，跳过 OAuth 流程")
+                return True
+            self.log.info("未检测到登录态，进入 OAuth 登录流程")
+
             # 1. 打开 Linux.do 登录页
             self.page.get(f"{self.config['base_url']}/login")
             self._random_delay(2, 4, "页面加载")
 
             # 2. 点击「使用 GitHub 登录」按钮（多重定位兜底 + CF 挑战回跳等待）
             gh_btn = None
-            for attempt in range(20):  # 最多等约 60 秒
+            for attempt in range(30):  # 最多等约 150 秒（含 CF 回跳等待）
                 gh_btn = (
                     self.page.ele("css:.btn-social.github", timeout=3)
                     or self.page.ele("css:.btn.github", timeout=3)
@@ -352,13 +370,11 @@ class LinuxDoBot:
                     for k in ("Just a moment", "Verifying", "Verification successful", "Checking your browser")
                 ) or "chl_" in self.page.url
                 if "Verification successful" in body_text or "Waiting for" in body_text:
-                    # Turnstile 验证已通过但回跳卡住 → 刷新重载（cookie 已种，刷新通常直接过）
-                    self.log.debug(f"CF 验证已过但回跳卡住({attempt + 1}/20)，刷新页面...")
-                    try:
-                        self.page.refresh()
-                    except Exception:
-                        pass
-                    time.sleep(3)
+                    # Turnstile 验证已通过，正在等待 linux.do 响应/回跳。
+                    # 此时【不能刷新】——刷新会重启整个挑战，导致 GitHub 按钮永远出不来。
+                    # 改为静候并轮询，给 linux.do 时间完成回跳到登录页（届时会出现 GitHub 按钮）。
+                    self.log.debug(f"CF 验证已通过，等待 linux.do 回跳({attempt + 1}/20)...")
+                    time.sleep(5)
                     continue
                 if cf_pending:
                     self.log.debug(f"Cloudflare 挑战中({attempt + 1}/20)，继续等待...")
@@ -586,23 +602,30 @@ class LinuxDoBot:
 
         start_time = time.time()
 
+        aborted = False
         try:
             # 启动浏览器
             if not self.start_browser(headless=headless, proxy=proxy):
-                return self.stats
+                self.log.error("浏览器启动失败，任务中止")
+                aborted = True
 
             # 登录
-            if not self.login():
-                return self.stats
+            if not aborted and not self.login():
+                self.log.error("登录失败，任务中止")
+                aborted = True
+
+            if not aborted:
+                self.login_ok = True
 
             # 获取启用的板块
             enabled_categories = [c for c in CATEGORIES if c.get("enabled", True)]
             random.shuffle(enabled_categories)
 
-            self.log.info(f"将浏览 {len(enabled_categories)} 个板块")
+            if not aborted:
+                self.log.info(f"将浏览 {len(enabled_categories)} 个板块")
 
             # 开始浏览
-            while self.stats["topics"] < target_topics:
+            while not aborted and self.stats["topics"] < target_topics:
                 for category in enabled_categories:
                     if self.stats["topics"] >= target_topics:
                         break
@@ -646,14 +669,44 @@ class LinuxDoBot:
         elapsed_sec = int(elapsed % 60)
 
         self.log.info("=" * 60)
-        self.log.info("任务完成")
+        self.log.info("任务结束" if aborted else "任务完成")
         self.log.info(f"用时: {elapsed_min}分{elapsed_sec}秒")
         self.log.info(f"浏览帖子: {self.stats['topics']}")
         self.log.info(f"点赞数: {self.stats['likes']}")
         self.log.info(f"滚动次数: {self.stats['floors']}")
         self.log.info("=" * 60)
 
+        # 发送 WxPusher 通知
+        self._notify(elapsed)
+
         return self.stats
+
+    def _notify(self, elapsed=None):
+        """发送运行结果通知（未配置则静默跳过；失败不影响主流程）"""
+        if not self.notifier or WxPusherNotifier is None or build_report is None:
+            return
+        try:
+            ok = self.stats["topics"] > 0
+            content = build_report(
+                topics=self.stats["topics"],
+                likes=self.stats["likes"],
+                floors=self.stats["floors"],
+                elapsed=elapsed,
+                login_ok=self.login_ok,
+                ok=ok,
+                extra=(
+                    f"- **目标**: {self.config.get('like_rate', 0) * 100:.0f}% 点赞率\n"
+                    f"- **时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                ),
+            )
+            summary = (
+                f"浏览 {self.stats['topics']} 篇 / 点赞 {self.stats['likes']} 次"
+                if self.login_ok
+                else "登录失败，请检查"
+            )
+            self.notifier.send(content, summary=summary, content_type=3)
+        except Exception as e:  # noqa: BLE001 通知失败绝不影响主流程
+            self.log.debug(f"发送通知失败: {e}")
 
 
 # ============================================================================
@@ -709,6 +762,23 @@ def parse_args():
     )
     parser.add_argument("--debug", action="store_true", help="调试模式")
 
+    # WxPusher 通知
+    parser.add_argument(
+        "--wxpusher-app-token",
+        help="WxPusher 应用 Token（或环境变量 WXPUSHER_APP_TOKEN）",
+    )
+    parser.add_argument(
+        "--wxpusher-uid",
+        help="WxPusher 接收者 UID，多个用逗号分隔（或环境变量 WXPUSHER_UIDS）",
+    )
+    parser.add_argument(
+        "--wxpusher-topic-id",
+        help="WxPusher 主题 ID，多个用逗号分隔（或环境变量 WXPUSHER_TOPIC_IDS）",
+    )
+    parser.add_argument(
+        "--no-notify", action="store_true", help="禁用 WxPusher 通知"
+    )
+
     return parser.parse_args()
 
 
@@ -755,10 +825,27 @@ def main():
     # 创建日志工具
     logger = Logger(debug=args.debug)
 
+    # 创建 WxPusher 通知器（未配置时 enabled=False，静默跳过）
+    notifier = None
+    if not args.no_notify and WxPusherNotifier is not None:
+        notifier = WxPusherNotifier(
+            app_token=args.wxpusher_app_token,
+            uids=args.wxpusher_uid,
+            topic_ids=args.wxpusher_topic_id,
+            logger=logger,
+        )
+        logger.info(f"WxPusher 通知: {notifier.describe()}")
+        if not notifier.enabled:
+            logger.warning(
+                "WxPusher 未配置（需 APP_TOKEN + UID），本次不发送通知；"
+                "可设置环境变量 WXPUSHER_APP_TOKEN / WXPUSHER_UIDS"
+            )
+
     # 配置
     config = {
         "like_rate": args.like_rate / 100,  # 转换为小数
         "auth_method": auth_method,
+        "notifier": notifier,
     }
 
     # 创建机器人并运行
